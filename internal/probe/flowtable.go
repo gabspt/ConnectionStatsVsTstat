@@ -38,9 +38,9 @@ func (table *FlowTable) Remove(key any) {
 	if found {
 		// log.Printf("Removing hash %v from flow table", hash)
 		table.Delete(key)
-	} else {
-		log.Printf("hash %v is not in flow table", key)
-	}
+	} //else {
+	//log.Printf("hash %v is not in flow table", key)
+	//}
 }
 
 func (table *FlowTable) CountActiveConns() {
@@ -174,31 +174,26 @@ func (ft *FlowTable) PrintFlowTable() {
 	log.Printf("")
 }
 
-// UpdateFlowTableFromRingbuf updates the FlowTable when the flow record comes from the ring buffer
-func (table *FlowTable) UpdateFlowTableFromRingbuf(fid probeFlowId, fm probeFlowMetrics) {
-	if fm.SynToRingbuf {
-		//flujo nuevo que no cupo en el hashmap, lo agrego al flowtable
-		table.Store(fid, fm)
-	} else {
-		//lo agrego solo si existe en el flowtable, si no existe no lo agrego porque no es un flujo nuevo
-		value, found := table.Load(fid)
-		if found {
-			existingflowm, ok := value.(probeFlowMetrics)
-			if ok {
-				fm.PacketsIn += existingflowm.PacketsIn
-				fm.PacketsOut += existingflowm.PacketsOut
-				fm.BytesIn += existingflowm.BytesIn
-				fm.BytesOut += existingflowm.BytesOut
-				if existingflowm.TsStart < fm.TsStart {
-					fm.TsStart = existingflowm.TsStart
-				}
-				if existingflowm.TsCurrent > fm.TsCurrent {
-					fm.TsCurrent = existingflowm.TsCurrent
-				}
-				table.Store(fid, fm)
-			} else {
-				log.Printf("Could not convert existing value to probeFlowMetrics: %+v", value)
+// UpdateFlowTableIfExists updates the FlowTable if the flow exists
+func (table *FlowTable) UpdateFlowTableIfExists(fid probeFlowId, fm probeFlowMetrics) {
+	//lo agrego solo si existe en el flowtable, si no existe no lo agrego porque no es un flujo nuevo
+	value, found := table.Load(fid)
+	if found {
+		existingflowm, ok := value.(probeFlowMetrics)
+		if ok {
+			fm.PacketsIn += existingflowm.PacketsIn
+			fm.PacketsOut += existingflowm.PacketsOut
+			fm.BytesIn += existingflowm.BytesIn
+			fm.BytesOut += existingflowm.BytesOut
+			if existingflowm.TsStart < fm.TsStart {
+				fm.TsStart = existingflowm.TsStart
 			}
+			if existingflowm.TsCurrent > fm.TsCurrent {
+				fm.TsCurrent = existingflowm.TsCurrent
+			}
+			table.Store(fid, fm)
+		} else {
+			log.Printf("Could not convert existing value to probeFlowMetrics: %+v", value)
 		}
 	}
 }

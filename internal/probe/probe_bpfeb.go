@@ -27,10 +27,9 @@ type probeFlowMetrics struct {
 	BytesOut     uint64
 	TsStart      uint64
 	TsCurrent    uint64
-	FinCounter   uint8
 	FlowClosed   bool
-	SynToRingbuf bool
-	_            [5]byte
+	SynOrUdpToRb bool
+	_            [6]byte
 }
 
 type probeGlobalMetrics struct {

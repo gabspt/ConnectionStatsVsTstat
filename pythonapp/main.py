@@ -15,7 +15,7 @@ parser = argparse.ArgumentParser(description='Python client for the connstats se
 # Add server_ip argument
 parser.add_argument('--server_ip', type=str, default='192.168.1.204', help='grpc server ip address')
 #parser.add_argument('--server_ip', type=str, required=True, help='grpc server ip address')
-parser.add_argument('--rtime', type=int, default=10, help='refresh time in seconds to collect the stats')
+parser.add_argument('--rtime', type=int, default=5, help='refresh time in seconds to collect the stats')
 
 # Analize the arguments passed to the script
 args = parser.parse_args()
