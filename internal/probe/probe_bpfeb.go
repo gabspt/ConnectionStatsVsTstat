@@ -12,24 +12,25 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-type probeFlowId struct {
-	L_ip     struct{ In6U struct{ U6Addr8 [16]uint8 } }
-	R_ip     struct{ In6U struct{ U6Addr8 [16]uint8 } }
-	L_port   uint16
-	R_port   uint16
-	Protocol uint8
-}
-
 type probeFlowMetrics struct {
+	FlowTuple struct {
+		A_ip     struct{ In6U struct{ U6Addr8 [16]uint8 } }
+		B_ip     struct{ In6U struct{ U6Addr8 [16]uint8 } }
+		A_port   uint16
+		B_port   uint16
+		Protocol uint8
+		_        [3]byte
+	}
 	PacketsIn    uint32
 	PacketsOut   uint32
 	BytesIn      uint64
 	BytesOut     uint64
 	TsStart      uint64
 	TsCurrent    uint64
-	FlowClosed   bool
+	FinCounter   uint8
+	FlowClosed   uint8
 	SynOrUdpToRb bool
-	_            [6]byte
+	_            [5]byte
 }
 
 type probeGlobalMetrics struct {

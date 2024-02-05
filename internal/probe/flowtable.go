@@ -76,30 +76,30 @@ func (table *FlowTable) GetConnList() []Connection {
 	var connlist []Connection
 	table.Range(func(key, value interface{}) bool {
 
-		fid, okid := key.(probeFlowId)
+		_, okid := key.(uint64)
 		fm, okm := value.(probeFlowMetrics)
 
 		if okid && okm {
 
-			protoc, ok := ipProtoNums[fid.Protocol]
+			protoc, ok := ipProtoNums[fm.FlowTuple.Protocol]
 			if !ok {
-				log.Print("Failed fetching protocol number: ", fid.Protocol)
+				log.Print("Failed fetching protocol number: ", fm.FlowTuple.Protocol)
 			}
-			lip, ok := convertToNetIPAddr(fid.L_ip)
+			aip, ok := convertToNetIPAddr(fm.FlowTuple.A_ip)
 			if !ok {
-				log.Print("Failed converting IP address: ", fid.L_ip)
+				log.Print("Failed converting IP address: ", fm.FlowTuple.A_ip)
 			}
-			rip, ok := convertToNetIPAddr(fid.R_ip)
+			bip, ok := convertToNetIPAddr(fm.FlowTuple.B_ip)
 			if !ok {
-				log.Print("Failed converting IP address: ", fid.R_ip)
+				log.Print("Failed converting IP address: ", fm.FlowTuple.B_ip)
 			}
 
 			connection := Connection{
 				Protocol:    protoc,
-				L_ip:        lip,
-				R_ip:        rip,
-				L_Port:      fid.L_port,
-				R_Port:      fid.R_port,
+				L_ip:        aip,
+				R_ip:        bip,
+				L_Port:      fm.FlowTuple.A_port,
+				R_Port:      fm.FlowTuple.B_port,
 				Packets_in:  fm.PacketsIn,
 				Packets_out: fm.PacketsOut,
 				Ts_start:    fm.TsStart,
@@ -116,19 +116,16 @@ func (table *FlowTable) GetConnList() []Connection {
 }
 
 // UpdateFlowTable updates the FlowTable and returns a boolean indicating if the flow was updated or not
-func (table *FlowTable) UpdateFlowTable(key, value interface{}) bool {
-	fid, okid := key.(probeFlowId)
-	fm, okm := value.(probeFlowMetrics)
+// func (table *FlowTable) UpdateFlowTable(flowhash uint64, fm probeFlowMetrics) bool {
+func (table *FlowTable) UpdateFlowTable(flowhash uint64, fm probeFlowMetrics) {
 
-	if okid && okm {
-		value, found := table.Load(fid)
-		if !found { // Flow does not exist in the flow table add tal cual
-			table.Store(fid, fm)
-		} else {
-			existingflowm, ok := value.(probeFlowMetrics)
-			if ok {
-				//log.Printf("Existing flow key: %+v,  metrics: %+v", fid, existingflowm)
-				//log.Printf("Incoming flow key: %+v,  metrics: %+v", fid, fm)
+	value, found := table.Load(flowhash)
+	if !found { // Flow does not exist in the flow table add tal cual
+		table.Store(flowhash, fm)
+	} else {
+		existingflowm, ok := value.(probeFlowMetrics)
+		if ok {
+			if existingflowm.TsCurrent != fm.TsCurrent { //solo se actualiza el flujo si el timestamp current no es el mismo
 				fm.PacketsIn += existingflowm.PacketsIn
 				fm.PacketsOut += existingflowm.PacketsOut
 				fm.BytesIn += existingflowm.BytesIn
@@ -139,19 +136,82 @@ func (table *FlowTable) UpdateFlowTable(key, value interface{}) bool {
 				if existingflowm.TsCurrent > fm.TsCurrent {
 					fm.TsCurrent = existingflowm.TsCurrent
 				}
-				table.Store(fid, fm)
-				//log.Printf("Stored flow key: %+v,  metrics: %+v", fid, fm)
-			} else {
-				log.Printf("Could not convert existing value to probeFlowMetrics: %+v", value)
-				//ft.Store(fid, flowmetrics) //decidir si en este caso se queda la tabla como estaba o se le pone lo del flowstracker, ahora mismo se queda como estaba, maybe ca,biar dependiendo de experimentos
+				table.Store(flowhash, fm)
 			}
+		} else {
+			log.Printf("Could not convert existing value to probeFlowMetrics: %+v", value)
+			//ft.Store(fid, flowmetrics) //decidir si en este caso se queda la tabla como estaba o se le pone lo del flowstracker, ahora mismo se queda como estaba, maybe ca,biar dependiendo de experimentos
 		}
-
-	} else {
-		log.Printf("Could not convert key or value to probeFlowId or probeFlowMetrics: %+v, %+v", key, value)
-		return false
 	}
-	return true
+}
+
+func (table *FlowTable) UpdateFlowTableIfSynOrUdpToRb(flowhash uint64, fm probeFlowMetrics) {
+
+	value, found := table.Load(flowhash)
+	if !found { // Flow does not exist in the flow table add tal cual
+		table.Store(flowhash, fm)
+	} else {
+		existingflowm, ok := value.(probeFlowMetrics)
+		if ok {
+			if existingflowm.TsStart < fm.TsStart { // es lo logico
+				if existingflowm.FlowTuple != fm.FlowTuple {
+					//son estadisticas del flujo en sentido contrario
+					fm.PacketsIn += existingflowm.PacketsOut
+					fm.PacketsOut += existingflowm.PacketsIn
+					fm.BytesIn += existingflowm.BytesOut
+					fm.BytesOut += existingflowm.BytesIn
+					fm.FlowTuple = existingflowm.FlowTuple
+				} else {
+					fm.PacketsIn += existingflowm.PacketsIn
+					fm.PacketsOut += existingflowm.PacketsOut
+					fm.BytesIn += existingflowm.BytesIn
+					fm.BytesOut += existingflowm.BytesOut
+				}
+				fm.TsStart = existingflowm.TsStart
+				if existingflowm.TsCurrent > fm.TsCurrent {
+					fm.TsCurrent = existingflowm.TsCurrent
+				}
+				table.Store(flowhash, fm)
+			}
+		} else {
+			log.Printf("Could not convert existing value to probeFlowMetrics: %+v", value)
+			//ft.Store(fid, flowmetrics) //decidir si en este caso se queda la tabla como estaba o se le pone lo del flowstracker, ahora mismo se queda como estaba, maybe ca,biar dependiendo de experimentos
+		}
+	}
+}
+
+// UpdateFlowTableIfExists updates the FlowTable if the flow exists
+func (table *FlowTable) UpdateFlowTableIfExists(flowhash uint64, fm probeFlowMetrics) {
+	//lo agrego solo si existe en el flowtable, si no existe no lo agrego porque no es un flujo nuevo
+	value, found := table.Load(flowhash)
+	if found {
+		existingflowm, ok := value.(probeFlowMetrics)
+		if ok {
+			if existingflowm.TsStart < fm.TsStart { // es lo logico
+				if existingflowm.FlowTuple != fm.FlowTuple {
+					//son estadisticas del flujo en sentido contrario
+					fm.PacketsIn += existingflowm.PacketsOut
+					fm.PacketsOut += existingflowm.PacketsIn
+					fm.BytesIn += existingflowm.BytesOut
+					fm.BytesOut += existingflowm.BytesIn
+					fm.FlowTuple = existingflowm.FlowTuple
+				} else {
+					fm.PacketsIn += existingflowm.PacketsIn
+					fm.PacketsOut += existingflowm.PacketsOut
+					fm.BytesIn += existingflowm.BytesIn
+					fm.BytesOut += existingflowm.BytesOut
+				}
+				fm.TsStart = existingflowm.TsStart
+				if existingflowm.TsCurrent > fm.TsCurrent {
+					fm.TsCurrent = existingflowm.TsCurrent
+				}
+				table.Store(flowhash, fm)
+				//log.Printf("Stored flow key: %+v,  metrics: %+v", fid, fm)
+			}
+		} else {
+			log.Printf("Could not convert existing value to probeFlowMetrics: %+v", value)
+		}
+	}
 }
 
 // Size returns the size of the FlowTable
@@ -172,28 +232,4 @@ func (ft *FlowTable) PrintFlowTable() {
 	})
 	log.Printf("FlowTable size: %v\n", ft.Size())
 	log.Printf("")
-}
-
-// UpdateFlowTableIfExists updates the FlowTable if the flow exists
-func (table *FlowTable) UpdateFlowTableIfExists(fid probeFlowId, fm probeFlowMetrics) {
-	//lo agrego solo si existe en el flowtable, si no existe no lo agrego porque no es un flujo nuevo
-	value, found := table.Load(fid)
-	if found {
-		existingflowm, ok := value.(probeFlowMetrics)
-		if ok {
-			fm.PacketsIn += existingflowm.PacketsIn
-			fm.PacketsOut += existingflowm.PacketsOut
-			fm.BytesIn += existingflowm.BytesIn
-			fm.BytesOut += existingflowm.BytesOut
-			if existingflowm.TsStart < fm.TsStart {
-				fm.TsStart = existingflowm.TsStart
-			}
-			if existingflowm.TsCurrent > fm.TsCurrent {
-				fm.TsCurrent = existingflowm.TsCurrent
-			}
-			table.Store(fid, fm)
-		} else {
-			log.Printf("Could not convert existing value to probeFlowMetrics: %+v", value)
-		}
-	}
 }
