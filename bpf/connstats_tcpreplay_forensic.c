@@ -69,8 +69,9 @@ struct packet_t {
     bool fin;
     bool rst;
     uint64_t ts;
-    bool outbound;
+    //bool outbound;
     __u32 len;
+    __u32 payload_size;
 };
 struct flow_tuple {
     struct in6_addr a_ip;
@@ -84,7 +85,9 @@ struct flow_metrics {
     __u32 packets_in;
     __u32 packets_out;
     __u64 bytes_in;
+    __u64 payload_in;
     __u64 bytes_out;
+    __u64 payload_out;
     __u64 ts_start;
     __u64 ts_current;
     __u8 fin_counter;
@@ -98,12 +101,14 @@ struct flow_record {
 };
 
 struct global_metrics {
-    __u64 total_packets;
+    __u64 total_processedpackets; 
+    __u64 total_tcpudppackets;
     __u64 total_tcppackets;
     __u64 total_udppackets;
     __u64 total_flows;
     __u64 total_tcpflows;
     __u64 total_udpflows;
+    //__u64 total_hash_collisions; //agregado para pruebas de contar colisiones de hash
 };
 
 bool syndidntfitsentrb = false;
@@ -121,12 +126,37 @@ struct {
     __uint(map_flags, BPF_F_NO_PREALLOC);
 } flowstracker SEC(".maps");
 
+// struct {
+//     __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+//     __uint(max_entries, 1 << 24);
+//     __type(key, __u64);
+//     __type(value, struct flow_metrics);
+//     __uint(map_flags, BPF_F_NO_PREALLOC);
+// } flowstracker SEC(".maps");
+
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 1 );
     __type(key, __u32);
     __type(value, struct global_metrics); // cambiar por una nueva struct que contenga las metricas glbaes
 } globalmetrics SEC(".maps");
+
+//para rastrear los flujos y hashs
+// struct {
+//     __uint(type, BPF_MAP_TYPE_HASH);
+//     __uint(max_entries, 1 << 24);
+//     __type(key, struct flow_tuple);
+//     __type(value, __u64);
+//     __uint(map_flags, BPF_F_NO_PREALLOC);
+// } flow_hash_map SEC(".maps");
+
+// struct {
+//     __uint(type, BPF_MAP_TYPE_HASH);
+//     __uint(max_entries, 1 << 24);
+//     __type(key, struct flow_tuple);
+//     __type(value, __u64);
+//     __uint(map_flags, BPF_F_NO_PREALLOC);
+// } hash_collisions_map SEC(".maps");
 
 static inline int handle_ip_packet(uint8_t* head, uint8_t* tail, uint32_t* offset, struct packet_t* pkt) {
     struct ethhdr* eth = (void*)head;
@@ -191,6 +221,7 @@ static inline int handle_ip_segment(uint8_t* head, uint8_t* tail, uint32_t* offs
     switch (pkt->protocol) {
     case IPPROTO_TCP:
         tcp = (void*)head + *offset;
+        *offset += tcp->doff * 4; // Actualizar el offset con el tamaño de la cabecera TCP
 
         pkt->src_port = tcp->source;
         pkt->dst_port = tcp->dest;
@@ -204,6 +235,7 @@ static inline int handle_ip_segment(uint8_t* head, uint8_t* tail, uint32_t* offs
 
     case IPPROTO_UDP:
         udp = (void*)head + *offset;
+        *offset += sizeof(struct udphdr); // Actualizar el offset con el tamaño de la cabecera UDP
 
         pkt->src_port = udp->source;
         pkt->dst_port = udp->dest;
@@ -263,26 +295,16 @@ static inline int submit_flow_record(__u64 flowhash, struct flow_metrics *flowme
     return 0;
 }
 
-static inline int update_metrics(struct packet_t* pkt) {
+static inline int update_metrics(struct packet_t* pkt, struct global_metrics *globalm) {
     //update global metrics total_packets, total_tcp_packets, total_udp_packets 
     __u32 keygb = 0;
-    struct global_metrics *globalm = bpf_map_lookup_elem(&globalmetrics, &keygb);
-    if (!globalm) {
-        struct global_metrics new_globalm = {0};
-        new_globalm.total_packets = 1; //probar modificarlo fuera 
-        new_globalm.total_tcppackets = (pkt->protocol == IPPROTO_TCP) ? 1 : 0;
-        new_globalm.total_udppackets = (pkt->protocol == IPPROTO_TCP) ? 0 : 1;
-        bpf_map_update_elem(&globalmetrics, &keygb, &new_globalm, BPF_ANY);
-        globalm = &new_globalm;
+    globalm->total_tcpudppackets += 1;
+    if (pkt->protocol == IPPROTO_TCP) {
+        globalm->total_tcppackets += 1;
     } else {
-        globalm->total_packets += 1;
-        if (pkt->protocol == IPPROTO_TCP) {
-            globalm->total_tcppackets += 1;
-        } else {
-            globalm->total_udppackets += 1;
-        }
-        bpf_map_update_elem(&globalmetrics, &keygb, globalm, BPF_ANY); 
+        globalm->total_udppackets += 1;
     }
+    bpf_map_update_elem(&globalmetrics, &keygb, globalm, BPF_ANY); 
 
     //conformando el flow id
     struct flow_tuple flowtuple = {0};
@@ -295,6 +317,25 @@ static inline int update_metrics(struct packet_t* pkt) {
     __u64 flowhash = 0;
     flowhash = calculate_flow_id_hash(&flowtuple);
 
+    //code for hash collision detection
+    // __u64 new_hash = calculate_flow_id_hash(&flowtuple);
+    // __u64 *stored_hash = bpf_map_lookup_elem(&flow_hash_map, &flowtuple);
+    // if (stored_hash) {
+    //     if (*stored_hash != new_hash) {
+    //         // Hash collision detected
+    //         // Handle the collision as needed, for example, by logging a message
+    //         //aumentar un contador de hash collisions y guardar esta flowtuple y su hash en el mapa global metrics
+    //         //update global metrics total_hash_collisions
+    //         globalm->total_hash_collisions += 1;
+    //         bpf_map_update_elem(&globalmetrics, &keygb, globalm, BPF_ANY);
+    //         //guardar esta flowtuple y su hash en el mapa globalmetrics
+    //         bpf_map_update_elem(&hash_collisions_map, &flowtuple, &new_hash, BPF_ANY);
+    //     }
+    // } else {
+    //     // No entry for this flow tuple yet, add one
+    //     bpf_map_update_elem(&flow_hash_map, &flowtuple, &new_hash, BPF_ANY);
+    // }
+    // __u64 flowhash = new_hash;
 
     struct flow_metrics *flowmetrics = bpf_map_lookup_elem(&flowstracker, &flowhash);
     if (flowmetrics != NULL) {
@@ -303,9 +344,11 @@ static inline int update_metrics(struct packet_t* pkt) {
         if (are_equal(pkt->src_ip, flowmetrics->flow_tuple.a_ip)) { 
             flowmetrics->packets_out += 1;
             flowmetrics->bytes_out += pkt->len;
+            flowmetrics->payload_out += pkt->payload_size;
         } else { //update ingress metrics
             flowmetrics->packets_in += 1;
             flowmetrics->bytes_in += pkt->len;
+            flowmetrics->payload_in += pkt->payload_size;
         }
         if (pkt->fin == true && pkt->ack == true) { // FIN/ACK segment observed
             flowmetrics->fin_counter += 1;
@@ -333,16 +376,6 @@ static inline int update_metrics(struct packet_t* pkt) {
             return TC_ACT_OK;
         }
         return TC_ACT_OK;
-        
-        //considering flow ended when the first FIN/ACK or RST segment are observed
-        // if ((pkt->fin == true && pkt->ack == true) || pkt->rst == true ) {
-        //     //consider flow ended, send to userspace to be deleted from hash map and flowtable
-        //     flowmetrics->flow_closed = 1;
-        //     if (submit_flow_record(flowhash, *flowmetrics) == TC_ACT_OK) {
-        //         return TC_ACT_OK;
-        //     }
-        //     //return TC_ACT_OK;
-        // }   
 
     } else {
         //flow doesn't exist, create new flow
@@ -352,6 +385,7 @@ static inline int update_metrics(struct packet_t* pkt) {
         new_flowm.ts_current = pkt->ts;
         new_flowm.packets_out = 1;
         new_flowm.bytes_out = pkt->len;
+        new_flowm.payload_out = pkt->payload_size;
         
         if ((pkt->syn == true && pkt->ack == false) || (pkt->protocol == IPPROTO_UDP)) { //new tcp syn or udp connection, add to flowstracker map
         
@@ -399,20 +433,31 @@ static inline int update_metrics(struct packet_t* pkt) {
 SEC("classifier/ingress")
 int connstatsin(struct __sk_buff* skb) {
 
-    // if generalcounter == 0 {
-        //hacer algo con un generalcounter o disminuirlo o aumentarlo para contar el total de paquetes que observa ebpf y cuando llegue a una cantidad parar programa
-    // }
     if (bpf_skb_pull_data(skb, 0) < 0) {
         //bpf_trace_printk("Ingress: error pulling data\n", sizeof("Ingress: error pulling data\n"));
         return TC_ACT_OK;
     }
     //bpf_trace_printk("Ingress: Pulling data\n", sizeof("Ingress: Pulling data\n"));
+    // Incrementar el contador de paquetes
 
-    //We only want unicast packets
-    if (skb->pkt_type == PACKET_BROADCAST || skb->pkt_type == PACKET_MULTICAST) {
-        //bpf_trace_printk("Ingress: Packet is not unicast\n", sizeof("Ingress: Packet is not unicast\n"));
-        return TC_ACT_OK;
-    }  
+    //update global metrics total_packets, total_tcp_packets, total_udp_packets 
+    __u32 keygb = 0;
+    struct global_metrics *globalm = bpf_map_lookup_elem(&globalmetrics, &keygb);
+    if (!globalm) {
+        struct global_metrics new_globalm = {0};
+        new_globalm.total_processedpackets = 1;
+        bpf_map_update_elem(&globalmetrics, &keygb, &new_globalm, BPF_ANY);
+        globalm = &new_globalm;
+    } else {
+        globalm->total_processedpackets += 1;
+        bpf_map_update_elem(&globalmetrics, &keygb, globalm, BPF_ANY); 
+    }
+
+    //Only process unicast packets
+    // if (skb->pkt_type == PACKET_BROADCAST || skb->pkt_type == PACKET_MULTICAST) {
+    //     //bpf_trace_printk("Ingress: Packet is not unicast\n", sizeof("Ingress: Packet is not unicast\n"));
+    //     return TC_ACT_OK;
+    // }  
 
     uint8_t* head = (uint8_t*)(long)skb->data;     // Start of the packet data
     uint8_t* tail = (uint8_t*)(long)skb->data_end; // End of the packet data
@@ -427,7 +472,7 @@ int connstatsin(struct __sk_buff* skb) {
     uint32_t offset = 0;
 
     pkt.len = skb->len;
-    pkt.outbound = false;
+    //pkt.outbound = false;
 
     if (handle_ip_packet(head, tail, &offset, &pkt) == TC_ACT_OK) {
         //bpf_trace_printk("Ingress: handle_ip_packet returned TC_ACT_OK\n", sizeof("Ingress: handle_ip_packet returned TC_ACT_OK\n"));
@@ -445,7 +490,10 @@ int connstatsin(struct __sk_buff* skb) {
         return TC_ACT_OK;
     }
 
-    if (update_metrics(&pkt) == TC_ACT_OK) {
+    // Después de procesar las cabeceras IP y TCP/UDP
+    pkt.payload_size = skb->len - offset;
+
+    if (update_metrics(&pkt, globalm) == TC_ACT_OK) {
         //bpf_trace_printk("Ingress: update_metrics returned TC_ACT_OK\n", sizeof("Ingress: update_metrics returned TC_ACT_OK\n"));
         return TC_ACT_OK;
     }
@@ -454,59 +502,71 @@ int connstatsin(struct __sk_buff* skb) {
     return TC_ACT_OK;
 }
 
-SEC("classifier/egress")
-int connstatsout(struct __sk_buff* skb) {
+// SEC("classifier/egress")
+// int connstatsout(struct __sk_buff* skb) {
 
-    if (bpf_skb_pull_data(skb, 0) < 0) {
-        //bpf_trace_printk("Egress: error pulling data\n", sizeof("Egress: error pulling data\n"));
-        return TC_ACT_OK;
-    }
-    //bpf_trace_printk("Egress: Pulling data\n", sizeof("Egress: Pulling data\n"));
+//     if (bpf_skb_pull_data(skb, 0) < 0) {
+//         //bpf_trace_printk("Egress: error pulling data\n", sizeof("Egress: error pulling data\n"));
+//         return TC_ACT_OK;
+//     }
+//     //bpf_trace_printk("Egress: Pulling data\n", sizeof("Egress: Pulling data\n"));
 
-    // We only want unicast packets
-    if (skb->pkt_type == PACKET_BROADCAST || skb->pkt_type == PACKET_MULTICAST) {
-        //bpf_trace_printk("Egress: Packet is not unicast\n", sizeof("Egress: Packet is not unicast\n"));
-        return TC_ACT_OK;
-    }  
+//     __u32 keygb = 0;
+//     struct global_metrics *globalm = bpf_map_lookup_elem(&globalmetrics, &keygb);
+//     if (!globalm) {
+//         struct global_metrics new_globalm = {0};
+//         new_globalm.total_processedpackets = 1;
+//         bpf_map_update_elem(&globalmetrics, &keygb, &new_globalm, BPF_ANY);
+//         globalm = &new_globalm;
+//     } else {
+//         globalm->total_processedpackets += 1;
+//         bpf_map_update_elem(&globalmetrics, &keygb, globalm, BPF_ANY); 
+//     }
 
-    uint8_t* head = (uint8_t*)(long)skb->data;     // Start of the packet data
-    uint8_t* tail = (uint8_t*)(long)skb->data_end; // End of the packet data
+//     // We only want unicast packets
+// //     if (skb->pkt_type == PACKET_BROADCAST || skb->pkt_type == PACKET_MULTICAST) {
+// //         //bpf_trace_printk("Egress: Packet is not unicast\n", sizeof("Egress: Packet is not unicast\n"));
+// //         return TC_ACT_OK;
+// //     }  
 
-    if (head + sizeof(struct ethhdr) > tail) { // Not an Ethernet frame
-        //bpf_trace_printk("Egress: Not an Ethernet frame\n", sizeof("Egress: Not an Ethernet frame\n"));
-        return TC_ACT_OK;
-    }
+//     uint8_t* head = (uint8_t*)(long)skb->data;     // Start of the packet data
+//     uint8_t* tail = (uint8_t*)(long)skb->data_end; // End of the packet data
 
-    struct packet_t pkt = { 0 };    
+//     if (head + sizeof(struct ethhdr) > tail) { // Not an Ethernet frame
+//         //bpf_trace_printk("Egress: Not an Ethernet frame\n", sizeof("Egress: Not an Ethernet frame\n"));
+//         return TC_ACT_OK;
+//     }
 
-    uint32_t offset = 0;
+//     struct packet_t pkt = { 0 };    
 
-    pkt.len = skb->len;
-    pkt.outbound = true;
+//     uint32_t offset = 0;
 
-    if (handle_ip_packet(head, tail, &offset, &pkt) == TC_ACT_OK) {
-        //bpf_trace_printk("Egress: handle_ip_packet returned TC_ACT_OK\n", sizeof("Egress: handle_ip_packet returned TC_ACT_OK\n"));
-        return TC_ACT_OK;
-    }
+//     pkt.len = skb->len;
+//     pkt.outbound = true;
 
-    // Check if TCP/UDP header is fitting this packet
-    if (head + offset + sizeof(struct tcphdr) > tail || head + offset + sizeof(struct udphdr) > tail) {
-        //bpf_trace_printk("Egress: TCP/UDP header does not fit in this packet\n", sizeof("Egress: TCP/UDP header does not fit in this packet\n"));
-        return TC_ACT_OK;
-    }
+//     if (handle_ip_packet(head, tail, &offset, &pkt) == TC_ACT_OK) {
+//         //bpf_trace_printk("Egress: handle_ip_packet returned TC_ACT_OK\n", sizeof("Egress: handle_ip_packet returned TC_ACT_OK\n"));
+//         return TC_ACT_OK;
+//     }
 
-    if (handle_ip_segment(head, tail, &offset, &pkt) == TC_ACT_OK) {
-        //bpf_trace_printk("Egress: handle_ip_segment returned TC_ACT_OK\n", sizeof("Egress: handle_ip_segment returned TC_ACT_OK\n"));
-        return TC_ACT_OK;
-    }
+//     // Check if TCP/UDP header is fitting this packet
+//     if (head + offset + sizeof(struct tcphdr) > tail || head + offset + sizeof(struct udphdr) > tail) {
+//         //bpf_trace_printk("Egress: TCP/UDP header does not fit in this packet\n", sizeof("Egress: TCP/UDP header does not fit in this packet\n"));
+//         return TC_ACT_OK;
+//     }
 
-    if (update_metrics(&pkt) == TC_ACT_OK) {
-        //bpf_trace_printk("Egress: update_metrics returned TC_ACT_OK\n", sizeof("Egress: update_metrics returned TC_ACT_OK\n"));
-        return TC_ACT_OK;
-    }
+//     if (handle_ip_segment(head, tail, &offset, &pkt) == TC_ACT_OK) {
+//         //bpf_trace_printk("Egress: handle_ip_segment returned TC_ACT_OK\n", sizeof("Egress: handle_ip_segment returned TC_ACT_OK\n"));
+//         return TC_ACT_OK;
+//     }
 
-    //bpf_trace_printk("Egress: Packet processed successfully\n", sizeof("Egress: Packet processed successfully\n"));
-    return TC_ACT_OK;
-}
+//     if (update_metrics(&pkt, globalm) == TC_ACT_OK) {
+//         //bpf_trace_printk("Egress: update_metrics returned TC_ACT_OK\n", sizeof("Egress: update_metrics returned TC_ACT_OK\n"));
+//         return TC_ACT_OK;
+//     }
+
+//     //bpf_trace_printk("Egress: Packet processed successfully\n", sizeof("Egress: Packet processed successfully\n"));
+//     return TC_ACT_OK;
+// }
 
 char _license[] SEC("license") = "Dual MIT/GPL";

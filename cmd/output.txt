@@ -1,7 +1,22 @@
-2024/02/05 21:42:22 Starting up the probe at interface enp0s8
-2024/02/05 21:42:22 Creating a new probe
-2024/02/05 21:42:22 Setting rlimit - soft: 20971520, hard: 41943040
-2024/02/05 21:42:22 Loading probe object to kernel
-2024/02/05 21:42:22 server listening at [::]:50051
-2024/02/05 21:42:22 Creating qdisc
-2024/02/05 21:42:22 Creating qdisc filters
+2024/02/10 23:20:41 Starting up the probe at interface enp0s8
+2024/02/10 23:20:41 Creating a new probe
+2024/02/10 23:20:41 Setting rlimit - soft: 20971520, hard: 41943040
+2024/02/10 23:20:41 Loading probe object to kernel
+2024/02/10 23:20:42 Creating qdisc
+2024/02/10 23:20:42 Creating qdisc filters
+2024/02/10 23:41:41 
+2024/02/10 23:41:41 Global metrics:
+2024/02/10 23:41:41 ---------------
+2024/02/10 23:41:41 Total packets processed: 732046
+2024/02/10 23:41:41 Total packets analyzed (TCP+UDP): 727459
+2024/02/10 23:41:41 Total TCP packets analyzed: 574324
+2024/02/10 23:41:41 Total UDP packets analyzed: 153135
+2024/02/10 23:41:41 Total flows analyzed: 25710
+2024/02/10 23:41:41 Total TCP flows analyzed: 20034
+2024/02/10 23:41:41 Total UDP flows analyzed: 5676
+2024/02/10 23:41:41 
+2024/02/10 23:41:41 Removing qdisc
+2024/02/10 23:41:41 Deleting handle
+2024/02/10 23:41:41 Closing eBPF object
+4.05user 29.32system 21:01.81elapsed 2%CPU (0avgtext+0avgdata 91520maxresident)k
+8inputs+14040outputs (30major+36325minor)pagefaults 0swaps

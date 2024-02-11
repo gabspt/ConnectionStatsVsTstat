@@ -24,7 +24,9 @@ type probeFlowMetrics struct {
 	PacketsIn    uint32
 	PacketsOut   uint32
 	BytesIn      uint64
+	PayloadIn    uint64
 	BytesOut     uint64
+	PayloadOut   uint64
 	TsStart      uint64
 	TsCurrent    uint64
 	FinCounter   uint8
@@ -34,12 +36,13 @@ type probeFlowMetrics struct {
 }
 
 type probeGlobalMetrics struct {
-	TotalPackets    uint64
-	TotalTcppackets uint64
-	TotalUdppackets uint64
-	TotalFlows      uint64
-	TotalTcpflows   uint64
-	TotalUdpflows   uint64
+	TotalProcessedpackets uint64
+	TotalTcpudppackets    uint64
+	TotalTcppackets       uint64
+	TotalUdppackets       uint64
+	TotalFlows            uint64
+	TotalTcpflows         uint64
+	TotalUdpflows         uint64
 }
 
 // loadProbe returns the embedded CollectionSpec for probe.
@@ -83,8 +86,7 @@ type probeSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type probeProgramSpecs struct {
-	Connstatsin  *ebpf.ProgramSpec `ebpf:"connstatsin"`
-	Connstatsout *ebpf.ProgramSpec `ebpf:"connstatsout"`
+	Connstatsin *ebpf.ProgramSpec `ebpf:"connstatsin"`
 }
 
 // probeMapSpecs contains maps before they are loaded into the kernel.
@@ -132,14 +134,12 @@ func (m *probeMaps) Close() error {
 //
 // It can be passed to loadProbeObjects or ebpf.CollectionSpec.LoadAndAssign.
 type probePrograms struct {
-	Connstatsin  *ebpf.Program `ebpf:"connstatsin"`
-	Connstatsout *ebpf.Program `ebpf:"connstatsout"`
+	Connstatsin *ebpf.Program `ebpf:"connstatsin"`
 }
 
 func (p *probePrograms) Close() error {
 	return _ProbeClose(
 		p.Connstatsin,
-		p.Connstatsout,
 	)
 }
 
