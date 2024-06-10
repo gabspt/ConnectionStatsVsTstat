@@ -9,7 +9,8 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
+
+	//"time"
 
 	//pb "github.com/gabspt/ConnectionStats/connstatsprotobuf"
 	"github.com/gabspt/ConnectionStats/internal/probe"
@@ -91,10 +92,10 @@ func main() {
 		displayInterfaces()
 	}
 
-	//ctx := context.Background()
-	//ctx, cancel := context.WithCancel(ctx)
-	ctx, cancel := context.WithTimeout(context.Background(), (1260 * time.Second))
-	defer cancel()
+	ctx := context.Background()
+	ctx, cancel := context.WithCancel(ctx)
+	//ctx, cancel := context.WithTimeout(context.Background(), (1260 * time.Second))
+	//defer cancel()
 
 	signalHandler(cancel)
 

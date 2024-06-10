@@ -30,9 +30,10 @@ type probeFlowMetrics struct {
 	TsStart      uint64
 	TsCurrent    uint64
 	FinCounter   uint8
+	AckCounter   uint8
 	FlowClosed   uint8
 	SynOrUdpToRb bool
-	_            [5]byte
+	_            [4]byte
 }
 
 type probeGlobalMetrics struct {

@@ -69,7 +69,6 @@ struct packet_t {
     bool fin;
     bool rst;
     uint64_t ts;
-    //bool outbound;
     __u32 len;
     __u32 payload_size;
 };
@@ -91,6 +90,7 @@ struct flow_metrics {
     __u64 ts_start;
     __u64 ts_current;
     __u8 fin_counter;
+    __u8 ack_counter;
     __u8 flow_closed; // 0 flow open, 1 flow ended normally, 2 flow ended anormally
     bool syn_or_udp_to_rb;
 };
@@ -108,7 +108,6 @@ struct global_metrics {
     __u64 total_flows;
     __u64 total_tcpflows;
     __u64 total_udpflows;
-    //__u64 total_hash_collisions; //agregado para pruebas de contar colisiones de hash
 };
 
 bool syndidntfitsentrb = false;
@@ -126,37 +125,12 @@ struct {
     __uint(map_flags, BPF_F_NO_PREALLOC);
 } flowstracker SEC(".maps");
 
-// struct {
-//     __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
-//     __uint(max_entries, 1 << 24);
-//     __type(key, __u64);
-//     __type(value, struct flow_metrics);
-//     __uint(map_flags, BPF_F_NO_PREALLOC);
-// } flowstracker SEC(".maps");
-
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 1 );
     __type(key, __u32);
     __type(value, struct global_metrics); // cambiar por una nueva struct que contenga las metricas glbaes
 } globalmetrics SEC(".maps");
-
-//para rastrear los flujos y hashs
-// struct {
-//     __uint(type, BPF_MAP_TYPE_HASH);
-//     __uint(max_entries, 1 << 24);
-//     __type(key, struct flow_tuple);
-//     __type(value, __u64);
-//     __uint(map_flags, BPF_F_NO_PREALLOC);
-// } flow_hash_map SEC(".maps");
-
-// struct {
-//     __uint(type, BPF_MAP_TYPE_HASH);
-//     __uint(max_entries, 1 << 24);
-//     __type(key, struct flow_tuple);
-//     __type(value, __u64);
-//     __uint(map_flags, BPF_F_NO_PREALLOC);
-// } hash_collisions_map SEC(".maps");
 
 static inline int handle_ip_packet(uint8_t* head, uint8_t* tail, uint32_t* offset, struct packet_t* pkt) {
     struct ethhdr* eth = (void*)head;
@@ -301,7 +275,7 @@ static inline int update_metrics(struct packet_t* pkt, struct global_metrics *gl
     globalm->total_tcpudppackets += 1;
     if (pkt->protocol == IPPROTO_TCP) {
         globalm->total_tcppackets += 1;
-    } else {
+    } else if (pkt->protocol == IPPROTO_UDP){
         globalm->total_udppackets += 1;
     }
     bpf_map_update_elem(&globalmetrics, &keygb, globalm, BPF_ANY); 
@@ -316,26 +290,6 @@ static inline int update_metrics(struct packet_t* pkt, struct global_metrics *gl
    
     __u64 flowhash = 0;
     flowhash = calculate_flow_id_hash(&flowtuple);
-
-    //code for hash collision detection
-    // __u64 new_hash = calculate_flow_id_hash(&flowtuple);
-    // __u64 *stored_hash = bpf_map_lookup_elem(&flow_hash_map, &flowtuple);
-    // if (stored_hash) {
-    //     if (*stored_hash != new_hash) {
-    //         // Hash collision detected
-    //         // Handle the collision as needed, for example, by logging a message
-    //         //aumentar un contador de hash collisions y guardar esta flowtuple y su hash en el mapa global metrics
-    //         //update global metrics total_hash_collisions
-    //         globalm->total_hash_collisions += 1;
-    //         bpf_map_update_elem(&globalmetrics, &keygb, globalm, BPF_ANY);
-    //         //guardar esta flowtuple y su hash en el mapa globalmetrics
-    //         bpf_map_update_elem(&hash_collisions_map, &flowtuple, &new_hash, BPF_ANY);
-    //     }
-    // } else {
-    //     // No entry for this flow tuple yet, add one
-    //     bpf_map_update_elem(&flow_hash_map, &flowtuple, &new_hash, BPF_ANY);
-    // }
-    // __u64 flowhash = new_hash;
 
     struct flow_metrics *flowmetrics = bpf_map_lookup_elem(&flowstracker, &flowhash);
     if (flowmetrics != NULL) {
@@ -353,10 +307,12 @@ static inline int update_metrics(struct packet_t* pkt, struct global_metrics *gl
         if (pkt->fin == true && pkt->ack == true) { // FIN/ACK segment observed
             flowmetrics->fin_counter += 1;
         }
-
+        if (flowmetrics->fin_counter >= 1 && pkt->ack == true && pkt->fin == false && pkt->syn == false && pkt->rst == false ){
+            flowmetrics->ack_counter += 1;
+        }
         //check if flow ended //consider flow ended, send to userspace to be deleted from hash map and flowtable
-        //after 2 fin packets and 1 ack are received consider flow ended normally, or if rst packet recieved consider flow ended anormally, -> delete flow from map
-        if (flowmetrics->fin_counter>=2 && pkt->ack == true && pkt->fin == false && pkt->syn == false && pkt->rst == false) { //flow ended normally  
+        //after 2 fin packets and 2 ack are received consider flow ended normally, or if rst packet recieved consider flow ended anormally, -> delete flow from map
+        if (flowmetrics->fin_counter>=2 && flowmetrics->ack_counter>=2 && pkt->ack == true && pkt->fin == false && pkt->syn == false && pkt->rst == false) { //flow ended normally  
             flowmetrics->flow_closed = 1;
         } else if (pkt->rst == true) { //flow ended anormally
             flowmetrics->flow_closed = 2;
@@ -401,8 +357,7 @@ static inline int update_metrics(struct packet_t* pkt, struct global_metrics *gl
             //add to flowstracker hash map
             long ret = bpf_map_update_elem(&flowstracker, &flowhash, &new_flowm, BPF_NOEXIST);
             if (ret != 0) {
-                //bpf_printk("error adding new flow %d\n", ret); 
-                // //maybe because map is full -> send to userspace via ringbuf to avoid losing flows
+                //bpf_printk("error adding new flow %d\n", ret); //maybe because map is full -> send to userspace via ringbuf to avoid losing flows
                 new_flowm.syn_or_udp_to_rb = true;
                 if (submit_flow_record(flowhash, &new_flowm) == TC_ACT_OK) {
                     return TC_ACT_OK;
@@ -414,10 +369,7 @@ static inline int update_metrics(struct packet_t* pkt, struct global_metrics *gl
             }
             //syndidntfitsentrb = false;
         } else{          
-            //es un tcp no syn que no existe en el hashmap, 
-            //enviar a userspace para revisar alla si pertenece a un flujo que se inicio en el userspace por el ringbuf
-            //pero solo si ya se envio alguna vez un syn a userspace
-            //ademas senalizarlo
+            //es un tcp no syn que no existe en el hashmap, enviar a userspace para revisar alla si pertenece a un flujo que se inicio en el userspace por el ringbuf pero solo si ya se envio alguna vez un syn a userspace, ademas senalizarlo
             if (syndidntfitsentrb == true) {
                 new_flowm.syn_or_udp_to_rb = false;
                 if (submit_flow_record(flowhash, &new_flowm) == TC_ACT_OK) {
@@ -437,8 +389,6 @@ int connstatsin(struct __sk_buff* skb) {
         //bpf_trace_printk("Ingress: error pulling data\n", sizeof("Ingress: error pulling data\n"));
         return TC_ACT_OK;
     }
-    //bpf_trace_printk("Ingress: Pulling data\n", sizeof("Ingress: Pulling data\n"));
-    // Incrementar el contador de paquetes
 
     //update global metrics total_packets, total_tcp_packets, total_udp_packets 
     __u32 keygb = 0;
@@ -472,7 +422,6 @@ int connstatsin(struct __sk_buff* skb) {
     uint32_t offset = 0;
 
     pkt.len = skb->len;
-    //pkt.outbound = false;
 
     if (handle_ip_packet(head, tail, &offset, &pkt) == TC_ACT_OK) {
         //bpf_trace_printk("Ingress: handle_ip_packet returned TC_ACT_OK\n", sizeof("Ingress: handle_ip_packet returned TC_ACT_OK\n"));
